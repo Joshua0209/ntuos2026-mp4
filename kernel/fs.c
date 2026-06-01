@@ -742,6 +742,8 @@ static struct inode*
 namex(char *path, int nameiparent, char *name)
 {
   struct inode *ip, *next;
+  char target[MAXPATH];
+  int len, hops;
 
   if(*path == '/')
     ip = iget(ROOTDEV, ROOTINO);
@@ -766,10 +768,32 @@ namex(char *path, int nameiparent, char *name)
     iunlockput(ip);
     ip = next;
 
-    /* To do: symlinkdir
-
-
-    */
+    // Follow intermediate directory symlinks: if more path remains and the
+    // component just resolved is a symlink, replace it with its target. The
+    // next iteration's T_DIR check rejects a target that isn't a directory.
+    // The final component is never followed here (it returned early above
+    // for nameiparent, and for namei the leaf is left for sys_open). Bound
+    // to 100 hops to break cycles.
+    if(*path != '\0'){
+      ilock(ip);
+      hops = 0;
+      while(ip->type == T_SYMLINK){
+        if(++hops > 100){
+          iunlockput(ip);
+          return 0;
+        }
+        if((len = readi(ip, 0, (uint64)target, 0, MAXPATH)) <= 0){
+          iunlockput(ip);
+          return 0;
+        }
+        target[len] = 0;
+        iunlockput(ip);
+        if((ip = namei(target)) == 0)
+          return 0;
+        ilock(ip);
+      }
+      iunlock(ip);
+    }
   }
   if(nameiparent){
     iput(ip);

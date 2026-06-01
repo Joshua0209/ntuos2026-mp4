@@ -446,10 +446,31 @@ sys_chdir(void)
   }
   ilock(ip);
 
-  /* To do: symlinkdir
-
-
-  */
+  // If chdir's target is a symlink, follow it (bounded to 100 hops). The
+  // T_DIR check below then requires the final resolution to be a directory.
+  {
+    char target[MAXPATH];
+    int len, hops = 0;
+    while(ip->type == T_SYMLINK){
+      if(++hops > 100){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      if((len = readi(ip, 0, (uint64)target, 0, MAXPATH)) <= 0){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      target[len] = 0;
+      iunlockput(ip);
+      if((ip = namei(target)) == 0){
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+    }
+  }
 
   if(ip->type != T_DIR){
     iunlockput(ip);
