@@ -408,10 +408,6 @@ bmap(struct inode *ip, uint bn)
   uint addr, *a;
   struct buf *bp;
 
-  /* To do: bigfile
-
-
-  */
   if(bn < NDIRECT){
     if((addr = ip->addrs[bn]) == 0){
       addr = balloc(ip->dev);
@@ -443,6 +439,48 @@ bmap(struct inode *ip, uint bn)
     brelse(bp);
     return addr;
   }
+  bn -= NINDIRECT;
+
+  // Doubly-indirect: two slots, each covering NDINDIRECT (256*256) blocks.
+  if(bn < 2*NDINDIRECT){
+    uint idx = bn / NDINDIRECT;       // which doubly-indirect slot (0 or 1)
+    uint off = bn % NDINDIRECT;
+    uint i1 = off / NINDIRECT;        // index into the level-1 (first) block
+    uint i2 = off % NINDIRECT;        // index into the level-2 (second) block
+
+    // Level 1: the top pointer block, stored in addrs[NDIRECT+1+idx].
+    if((addr = ip->addrs[NDIRECT+1+idx]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[NDIRECT+1+idx] = addr;
+    }
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if((addr = a[i1]) == 0){
+      addr = balloc(ip->dev);
+      if(addr){
+        a[i1] = addr;
+        log_write(bp);
+      }
+    }
+    brelse(bp);
+    if(addr == 0)
+      return 0;
+
+    // Level 2: the leaf pointer block holding actual data-block numbers.
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if((addr = a[i2]) == 0){
+      addr = balloc(ip->dev);
+      if(addr){
+        a[i2] = addr;
+        log_write(bp);
+      }
+    }
+    brelse(bp);
+    return addr;
+  }
 
   panic("bmap: out of range");
 }
@@ -452,14 +490,10 @@ bmap(struct inode *ip, uint bn)
 void
 itrunc(struct inode *ip)
 {
-  int i, j;
-  struct buf *bp;
-  uint *a;
+  int i, j, k;
+  struct buf *bp, *bp2;
+  uint *a, *a2;
 
-  /* To do: bigfile
-
-
-  */
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
@@ -477,6 +511,31 @@ itrunc(struct inode *ip)
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+
+  // Free the two doubly-indirect slots: for each level-1 pointer block,
+  // free every level-2 block it points to (and their data blocks), then
+  // free the level-2 block, then the level-1 block itself.
+  for(i = 0; i < 2; i++){
+    if(ip->addrs[NDIRECT+1+i]){
+      bp = bread(ip->dev, ip->addrs[NDIRECT+1+i]);
+      a = (uint*)bp->data;
+      for(j = 0; j < NINDIRECT; j++){
+        if(a[j]){
+          bp2 = bread(ip->dev, a[j]);
+          a2 = (uint*)bp2->data;
+          for(k = 0; k < NINDIRECT; k++){
+            if(a2[k])
+              bfree(ip->dev, a2[k]);
+          }
+          brelse(bp2);
+          bfree(ip->dev, a[j]);
+        }
+      }
+      brelse(bp);
+      bfree(ip->dev, ip->addrs[NDIRECT+1+i]);
+      ip->addrs[NDIRECT+1+i] = 0;
+    }
   }
 
   ip->size = 0;
