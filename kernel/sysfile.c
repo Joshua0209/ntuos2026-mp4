@@ -334,10 +334,31 @@ sys_open(void)
       return -1;
     }
 
-    /* To do: symlinkfile
-
-
-    */
+    // Follow the leaf symlink unless O_NOFOLLOW is set. Bound the chain to
+    // detect self-loops, cycles, and overly-long chains (limit 100 hops).
+    if(!(omode & O_NOFOLLOW)){
+      char target[MAXPATH];
+      int len, hops = 0;
+      while(ip->type == T_SYMLINK){
+        if(++hops > 100){
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        if((len = readi(ip, 0, (uint64)target, 0, MAXPATH)) <= 0){
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        target[len] = 0;
+        iunlockput(ip);
+        if((ip = namei(target)) == 0){
+          end_op();
+          return -1;
+        }
+        ilock(ip);
+      }
+    }
   }
 
   if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
@@ -518,10 +539,32 @@ sys_pipe(void)
 uint64
 sys_symlink(void)
 {
-  /* To do: symlinkfile
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+  int len;
 
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
 
-  */
-  panic("sys_symlink not implemented");
+  begin_op();
+
+  // create() returns the new inode locked. The target need not exist yet,
+  // so we never namei(target) here.
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
+    end_op();
+    return -1;
+  }
+
+  // Store the target path as the symlink's contents (no NUL terminator;
+  // the length is recoverable from ip->size when reading it back).
+  len = strlen(target);
+  if(writei(ip, 0, (uint64)target, 0, len) != len){
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op();
   return 0;
 }
